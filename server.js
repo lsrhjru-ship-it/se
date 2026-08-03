@@ -13,7 +13,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 // SQLite 데이터베이스 연결
 const db = new Database(path.join(__dirname, 'blog.db'));
 
-// 1. 테이블 생성 (imageUrl, views 컬럼 포함)
+// 1. 테이블 생성
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,12 +36,12 @@ db.exec(`
   );
 `);
 
-// 기존 테이블 컬럼 안전 마이그레이션
+// 컬럼 마이그레이션
 try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) {}
 try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) {}
 try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) {}
 
-// 2. 기본 관리자 계정 생성
+// 관리자 계정 초기화
 const initAdmin = async () => {
   const adminUser = process.env.ADMIN_USERNAME || 'lsrhjru';
   const adminPass = process.env.ADMIN_PASSWORD || 'lsr37733*';
@@ -51,18 +51,15 @@ const initAdmin = async () => {
   if (!row) {
     const hashedPassword = await bcrypt.hash(adminPass, 10);
     db.prepare('INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)').run(adminUser, hashedPassword, adminName, 'admin');
-    console.log('✅ 관리자 계정이 자동 생성되었습니다 (role: admin)');
-  } else if (row.role !== 'admin') {
-    db.prepare('UPDATE users SET role = ? WHERE username = ?').run('admin', adminUser);
-    console.log('✅ 기존 관리자 계정 권한이 admin으로 업데이트 되었습니다.');
+    console.log('✅ 관리자 계정이 생성되었습니다.');
   }
 };
 initAdmin();
 
-// 미들웨어 설정 (이미지 용량을 고려하여 10mb 설정)
+// 💡 미들웨어 설정 (이미지 용량을 고려하여 50mb로 확대)
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 // JWT 검증 미들웨어
@@ -70,7 +67,7 @@ const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
-  if (!token) return res.status(401).json({ message: '인증 토큰이 없습니다.' });
+  if (!token) return res.status(401).json({ message: '인증 토큰이 없습니다. 다시 로그인해 주세요.' });
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ message: '유효하지 않거나 만료된 토큰입니다.' });
@@ -81,42 +78,30 @@ const authenticateToken = (req, res, next) => {
 
 // --- API 라우트 ---
 
-// 1. 로그인
+// 로그인
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   try {
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-    if (!user) {
-      return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
-    }
+    if (!user) return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
-    }
+    if (!match) return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
 
-    const userRole = user.role || (user.username === process.env.ADMIN_USERNAME ? 'admin' : 'user');
-
+    const userRole = user.role || 'user';
     const token = jwt.sign(
       { id: user.id, username: user.username, name: user.name, role: userRole },
       JWT_SECRET,
       { expiresIn: '12h' }
     );
 
-    res.json({
-      token,
-      user: {
-        username: user.username,
-        name: user.name,
-        role: userRole
-      }
-    });
+    res.json({ token, user: { username: user.username, name: user.name, role: userRole } });
   } catch (error) {
     res.status(500).json({ message: '서버 에러가 발생했습니다.' });
   }
 });
 
-// 2. 게시글 목록 조회
+// 게시글 목록 조회
 app.get('/api/articles', (req, res) => {
   try {
     const articles = db.prepare('SELECT * FROM articles ORDER BY id DESC').all();
@@ -126,47 +111,57 @@ app.get('/api/articles', (req, res) => {
   }
 });
 
-// 3. 게시글 상세 조회 (💡 조회수 +1 증가 연동)
+// 게시글 상세 조회 (조회수 +1)
 app.get('/api/articles/:id', (req, res) => {
   try {
-    // 조회수 1 증가
     db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(req.params.id);
-
-    // 업데이트된 게시글 반환
     const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(req.params.id);
     if (!article) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
-    
     res.json(article);
   } catch (error) {
     res.status(500).json({ message: '게시글을 불러오지 못했습니다.' });
   }
 });
 
-// 4. 게시글 작성
+// 💡 게시글 작성 (undefined 예방 안전 로직 적용)
 app.post('/api/articles', authenticateToken, (req, res) => {
   const { category, title, content, summary, imageUrl } = req.body;
-  const author = req.user.name;
-  const date = new Date().toISOString().split('T')[0];
+
+  // 값 검증 및 undefined 방지
+  const safeCategory = category || '기타';
+  const safeTitle = title || '제목 없음';
+  const safeContent = content || '';
+  const safeAuthor = req.user?.name || req.user?.username || '관리자';
+  const safeDate = new Date().toISOString().split('T')[0];
+  const safeSummary = summary || safeContent.substring(0, 100) || '';
+  const safeImageUrl = imageUrl || null;
 
   try {
     const result = db.prepare(
       'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
-    ).run(category, title, author, date, summary || '', content, imageUrl || null);
+    ).run(safeCategory, safeTitle, safeAuthor, safeDate, safeSummary, safeContent, safeImageUrl);
 
-    res.status(201).json({ id: result.lastInsertRowid, message: '게시글이 등록되었습니다.' });
+    res.status(201).json({ id: result.lastInsertRowid, message: '게시글이 성공적으로 저장되었습니다.' });
   } catch (error) {
-    console.error('게시글 작성 오류:', error);
-    res.status(500).json({ message: '게시글 등록에 실패했습니다.' });
+    console.error('게시글 저장 오류:', error);
+    res.status(500).json({ message: '게시글 저장에 실패했습니다. (DB 오류)' });
   }
 });
 
-// 5. 게시글 수정
+// 💡 게시글 수정 (undefined 예방 안전 로직 적용)
 app.put('/api/articles/:id', authenticateToken, (req, res) => {
   const { category, title, content, summary, imageUrl } = req.body;
+
+  const safeCategory = category || '기타';
+  const safeTitle = title || '제목 없음';
+  const safeContent = content || '';
+  const safeSummary = summary || safeContent.substring(0, 100) || '';
+  const safeImageUrl = imageUrl !== undefined ? imageUrl : null;
+
   try {
     const result = db.prepare(
-      'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = COALESCE(?, imageUrl) WHERE id = ?'
-    ).run(category, title, content, summary || '', imageUrl, req.params.id);
+      'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = ? WHERE id = ?'
+    ).run(safeCategory, safeTitle, safeContent, safeSummary, safeImageUrl, req.params.id);
 
     if (result.changes === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json({ message: '게시글이 수정되었습니다.' });
@@ -176,7 +171,7 @@ app.put('/api/articles/:id', authenticateToken, (req, res) => {
   }
 });
 
-// 6. 게시글 삭제
+// 게시글 삭제
 app.delete('/api/articles/:id', authenticateToken, (req, res) => {
   try {
     const result = db.prepare('DELETE FROM articles WHERE id = ?').run(req.params.id);
