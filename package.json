@@ -1,7 +1,6 @@
 {
   "name": "news-magazine",
   "version": "1.0.0",
-  "description": "뉴스매거진 - Node.js + Express + SQLite 풀스택 뉴스 플랫폼",
   "main": "server.js",
   "engines": {
     "node": "20.x"
