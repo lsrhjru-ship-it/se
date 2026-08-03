@@ -13,7 +13,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 // SQLite 데이터베이스 연결
 const db = new Database(path.join(__dirname, 'blog.db'));
 
-// 1. 테이블 생성 (imageUrl 컬럼 추가)
+// 1. 테이블 생성 (imageUrl, views 컬럼 포함)
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,18 +31,15 @@ db.exec(`
     date TEXT NOT NULL,
     summary TEXT,
     content TEXT NOT NULL,
-    imageUrl TEXT
+    imageUrl TEXT,
+    views INTEGER DEFAULT 0
   );
 `);
 
-// 기존 DB 테이블 컬럼 마이그레이션 (안전 처리)
-try {
-  db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`);
-} catch (e) {}
-
-try {
-  db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`);
-} catch (e) {}
+// 기존 테이블 컬럼 안전 마이그레이션
+try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) {}
+try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) {}
+try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) {}
 
 // 2. 기본 관리자 계정 생성
 const initAdmin = async () => {
@@ -62,13 +59,10 @@ const initAdmin = async () => {
 };
 initAdmin();
 
-// 미들웨어 설정
+// 미들웨어 설정 (이미지 용량을 고려하여 10mb 설정)
 app.use(cors());
-
-// 💡 [수정] 사진(Base64) 업로드를 위해 데이터 요청 용량을 10MB로 확대
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
-
 app.use(express.static(path.join(__dirname)));
 
 // JWT 검증 미들웨어
@@ -132,18 +126,23 @@ app.get('/api/articles', (req, res) => {
   }
 });
 
-// 3. 게시글 상세 조회
+// 3. 게시글 상세 조회 (💡 조회수 +1 증가 연동)
 app.get('/api/articles/:id', (req, res) => {
   try {
+    // 조회수 1 증가
+    db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(req.params.id);
+
+    // 업데이트된 게시글 반환
     const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(req.params.id);
     if (!article) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
+    
     res.json(article);
   } catch (error) {
     res.status(500).json({ message: '게시글을 불러오지 못했습니다.' });
   }
 });
 
-// 4. 게시글 작성 (💡 imageUrl 추가)
+// 4. 게시글 작성
 app.post('/api/articles', authenticateToken, (req, res) => {
   const { category, title, content, summary, imageUrl } = req.body;
   const author = req.user.name;
@@ -151,17 +150,17 @@ app.post('/api/articles', authenticateToken, (req, res) => {
 
   try {
     const result = db.prepare(
-      'INSERT INTO articles (category, title, author, date, summary, content, imageUrl) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
     ).run(category, title, author, date, summary || '', content, imageUrl || null);
 
     res.status(201).json({ id: result.lastInsertRowid, message: '게시글이 등록되었습니다.' });
   } catch (error) {
-    console.error('게시글 등록 오류:', error);
+    console.error('게시글 작성 오류:', error);
     res.status(500).json({ message: '게시글 등록에 실패했습니다.' });
   }
 });
 
-// 5. 게시글 수정 (💡 imageUrl 추가)
+// 5. 게시글 수정
 app.put('/api/articles/:id', authenticateToken, (req, res) => {
   const { category, title, content, summary, imageUrl } = req.body;
   try {
