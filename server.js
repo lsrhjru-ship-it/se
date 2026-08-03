@@ -13,13 +13,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 // SQLite 데이터베이스 연결
 const db = new Database(path.join(__dirname, 'blog.db'));
 
-// 테이블 생성
+// 1. 테이블 생성 (users 테이블에 role 컬럼 추가)
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    role TEXT DEFAULT 'user'
   );
 
   CREATE TABLE IF NOT EXISTS articles (
@@ -33,7 +34,14 @@ db.exec(`
   );
 `);
 
-// 기본 관리자 계정 생성 (최초 1회)
+// 기존 테이블에 role 컬럼이 없는 경우를 대비한 마이그레이션
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`);
+} catch (e) {
+  // 이미 role 컬럼이 존재하는 경우 예외 무시
+}
+
+// 2. 기본 관리자 계정 생성 (최초 1회 및 Role 부여)
 const initAdmin = async () => {
   const adminUser = process.env.ADMIN_USERNAME || 'lsrhjru';
   const adminPass = process.env.ADMIN_PASSWORD || 'lsr37733*';
@@ -42,8 +50,12 @@ const initAdmin = async () => {
   const row = db.prepare('SELECT * FROM users WHERE username = ?').get(adminUser);
   if (!row) {
     const hashedPassword = await bcrypt.hash(adminPass, 10);
-    db.prepare('INSERT INTO users (username, password, name) VALUES (?, ?, ?)').run(adminUser, hashedPassword, adminName);
-    console.log('✅ 관리자 계정이 자동 생성되었습니다.');
+    db.prepare('INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)').run(adminUser, hashedPassword, adminName, 'admin');
+    console.log('✅ 관리자 계정이 자동 생성되었습니다 (role: admin)');
+  } else if (row.role !== 'admin') {
+    // 기존 계정이 존재하면 role을 'admin'으로 업데이트
+    db.prepare('UPDATE users SET role = ? WHERE username = ?').run('admin', adminUser);
+    console.log('✅ 기존 관리자 계정 권한이 admin으로 업데이트 되었습니다.');
   }
 };
 initAdmin();
@@ -69,7 +81,7 @@ const authenticateToken = (req, res, next) => {
 
 // --- API 라우트 ---
 
-// 1. 로그인
+// 1. 로그인 (role 정보 포함하여 응답)
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -83,8 +95,24 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username, name: user.name }, JWT_SECRET, { expiresIn: '12h' });
-    res.json({ token, user: { username: user.username, name: user.name } });
+    // role 정보 판단 (DB 값 기준 또는 .env 설정 아이디와 일치 시 'admin')
+    const userRole = user.role || (user.username === process.env.ADMIN_USERNAME ? 'admin' : 'user');
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, name: user.name, role: userRole },
+      JWT_SECRET,
+      { expiresIn: '12h' }
+    );
+
+    // 🔑 app.js가 요구하는 role 필드를 포함해서 응답
+    res.json({
+      token,
+      user: {
+        username: user.username,
+        name: user.name,
+        role: userRole
+      }
+    });
   } catch (error) {
     res.status(500).json({ message: '서버 에러가 발생했습니다.' });
   }
