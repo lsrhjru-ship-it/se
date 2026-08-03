@@ -13,7 +13,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 // SQLite 데이터베이스 연결
 const db = new Database(path.join(__dirname, 'blog.db'));
 
-// 1. 테이블 생성 (users 테이블에 role 컬럼 추가)
+// 1. 테이블 생성 (imageUrl 컬럼 추가)
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,18 +30,21 @@ db.exec(`
     author TEXT NOT NULL,
     date TEXT NOT NULL,
     summary TEXT,
-    content TEXT NOT NULL
+    content TEXT NOT NULL,
+    imageUrl TEXT
   );
 `);
 
-// 기존 테이블에 role 컬럼이 없는 경우를 대비한 마이그레이션
+// 기존 DB 테이블 컬럼 마이그레이션 (안전 처리)
 try {
   db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`);
-} catch (e) {
-  // 이미 role 컬럼이 존재하는 경우 예외 무시
-}
+} catch (e) {}
 
-// 2. 기본 관리자 계정 생성 (최초 1회 및 Role 부여)
+try {
+  db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`);
+} catch (e) {}
+
+// 2. 기본 관리자 계정 생성
 const initAdmin = async () => {
   const adminUser = process.env.ADMIN_USERNAME || 'lsrhjru';
   const adminPass = process.env.ADMIN_PASSWORD || 'lsr37733*';
@@ -53,7 +56,6 @@ const initAdmin = async () => {
     db.prepare('INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)').run(adminUser, hashedPassword, adminName, 'admin');
     console.log('✅ 관리자 계정이 자동 생성되었습니다 (role: admin)');
   } else if (row.role !== 'admin') {
-    // 기존 계정이 존재하면 role을 'admin'으로 업데이트
     db.prepare('UPDATE users SET role = ? WHERE username = ?').run('admin', adminUser);
     console.log('✅ 기존 관리자 계정 권한이 admin으로 업데이트 되었습니다.');
   }
@@ -62,7 +64,11 @@ initAdmin();
 
 // 미들웨어 설정
 app.use(cors());
-app.use(express.json());
+
+// 💡 [수정] 사진(Base64) 업로드를 위해 데이터 요청 용량을 10MB로 확대
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
 app.use(express.static(path.join(__dirname)));
 
 // JWT 검증 미들웨어
@@ -81,7 +87,7 @@ const authenticateToken = (req, res, next) => {
 
 // --- API 라우트 ---
 
-// 1. 로그인 (role 정보 포함하여 응답)
+// 1. 로그인
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -95,7 +101,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
 
-    // role 정보 판단 (DB 값 기준 또는 .env 설정 아이디와 일치 시 'admin')
     const userRole = user.role || (user.username === process.env.ADMIN_USERNAME ? 'admin' : 'user');
 
     const token = jwt.sign(
@@ -104,7 +109,6 @@ app.post('/api/auth/login', async (req, res) => {
       { expiresIn: '12h' }
     );
 
-    // 🔑 app.js가 요구하는 role 필드를 포함해서 응답
     res.json({
       token,
       user: {
@@ -139,39 +143,41 @@ app.get('/api/articles/:id', (req, res) => {
   }
 });
 
-// 4. 게시글 작성 (인증 필요)
+// 4. 게시글 작성 (💡 imageUrl 추가)
 app.post('/api/articles', authenticateToken, (req, res) => {
-  const { category, title, content, summary } = req.body;
+  const { category, title, content, summary, imageUrl } = req.body;
   const author = req.user.name;
   const date = new Date().toISOString().split('T')[0];
 
   try {
     const result = db.prepare(
-      'INSERT INTO articles (category, title, author, date, summary, content) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(category, title, author, date, summary || '', content);
+      'INSERT INTO articles (category, title, author, date, summary, content, imageUrl) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(category, title, author, date, summary || '', content, imageUrl || null);
 
     res.status(201).json({ id: result.lastInsertRowid, message: '게시글이 등록되었습니다.' });
   } catch (error) {
+    console.error('게시글 등록 오류:', error);
     res.status(500).json({ message: '게시글 등록에 실패했습니다.' });
   }
 });
 
-// 5. 게시글 수정 (인증 필요)
+// 5. 게시글 수정 (💡 imageUrl 추가)
 app.put('/api/articles/:id', authenticateToken, (req, res) => {
-  const { category, title, content, summary } = req.body;
+  const { category, title, content, summary, imageUrl } = req.body;
   try {
     const result = db.prepare(
-      'UPDATE articles SET category = ?, title = ?, content = ?, summary = ? WHERE id = ?'
-    ).run(category, title, content, summary || '', req.params.id);
+      'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = COALESCE(?, imageUrl) WHERE id = ?'
+    ).run(category, title, content, summary || '', imageUrl, req.params.id);
 
     if (result.changes === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json({ message: '게시글이 수정되었습니다.' });
   } catch (error) {
+    console.error('게시글 수정 오류:', error);
     res.status(500).json({ message: '게시글 수정에 실패했습니다.' });
   }
 });
 
-// 6. 게시글 삭제 (인증 필요)
+// 6. 게시글 삭제
 app.delete('/api/articles/:id', authenticateToken, (req, res) => {
   try {
     const result = db.prepare('DELETE FROM articles WHERE id = ?').run(req.params.id);
