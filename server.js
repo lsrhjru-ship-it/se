@@ -38,9 +38,9 @@ db.exec(`
 `);
 
 // 컬럼 마이그레이션
-try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) {}
-try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) {}
-try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) {}
+try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) { }
+try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) { }
+try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) { }
 
 // 관리자 계정 초기화
 const initAdmin = async () => {
@@ -76,7 +76,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 /* ==================================================
-   🌤️ 기상청 날씨 기사 자동 생성 및 등록 로직
+   🌤️ 기본 날씨 기사 자동 생성 로직 (서버 타이머용)
 ================================================== */
 async function generateWeatherArticle() {
   try {
@@ -122,7 +122,6 @@ async function generateWeatherArticle() {
 - 기상청 실시간 자동 뉴스 제공
     `.trim();
 
-    // 중복 등록 방지 (동일한 날짜와 기온의 기사가 이미 있는지 확인)
     const existing = db.prepare('SELECT * FROM articles WHERE title = ?').get(title);
     if (!existing) {
       db.prepare(
@@ -151,6 +150,85 @@ const authenticateToken = (req, res, next) => {
 };
 
 // --- API 라우트 ---
+
+// 📍 사용자 지역 맞춤 날씨 기사 자동 등록 API 라우트
+app.post('/api/articles/auto-weather', async (req, res) => {
+  const { latitude, longitude } = req.body;
+
+  const lat = latitude || 37.5665;
+  const lon = longitude || 126.9780;
+
+  try {
+    const weatherRes = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&hourly=relativehumidity_2m`
+    );
+    if (!weatherRes.ok) return res.status(400).json({ message: '날씨 정보를 가져올 수 없습니다.' });
+
+    const data = await weatherRes.json();
+    const temp = Math.round(data.current_weather.temperature);
+    const weatherCode = data.current_weather.weathercode;
+    const humidity = data.hourly?.relativehumidity_2m?.[0] || 60;
+    const windSpeed = data.current_weather.windspeed;
+
+    let regionName = '해당 지역';
+    try {
+      const geoRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ko`);
+      if (geoRes.ok) {
+        const geoData = await geoRes.json();
+        regionName = geoData.principalSubdivision || geoData.city || geoData.locality || '해당 지역';
+      }
+    } catch (e) {
+      console.log('도시명 변환 실패, 기본 이름 사용');
+    }
+
+    const getWeatherDesc = (code) => {
+      if (code === 0) return '맑음';
+      if (code >= 1 && code <= 3) return '구름 조금 및 흐림';
+      if (code >= 45 && code <= 48) return '짙은 안개';
+      if (code >= 51 && code <= 67) return '비/이슬비';
+      if (code >= 71 && code <= 77) return '눈';
+      if (code >= 80 && code <= 82) return '소나기';
+      if (code >= 95) return '천둥번개 뇌우';
+      return '대체로 흐림';
+    };
+
+    const weatherDesc = getWeatherDesc(weatherCode);
+    const todayStr = new Date().toISOString().split('T')[0];
+    const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+    const title = `[기상청 속보] ${regionName} 실시간 날씨 기온 ${temp}°C (${weatherDesc})`;
+    const summary = `현재 ${regionName} 지역 기온은 ${temp}°C이며 ${weatherDesc} 날씨를 보이고 있습니다.`;
+    const content = `
+[기상청 지역별 실시간 예보 - ${regionName} (${todayStr} ${timeStr} 기준)]
+
+현재 ${regionName} 지역의 날씨 정보를 알려드립니다.
+
+• 현재 기온: ${temp}°C
+• 기상 상태: ${weatherDesc}
+• 현재 습도: ${humidity}%
+• 풍속: 초속 ${windSpeed}m/s
+
+${regionName} 주민 여러분께서는 외출 시 기온 변화 및 기상 상황을 참고하시기 바랍니다.
+
+- 기상청 지역 맞춤 자동 기사 시스템
+    `.trim();
+
+    const existing = db.prepare('SELECT * FROM articles WHERE title = ?').get(title);
+    if (!existing) {
+      db.prepare(
+        'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
+      ).run('날씨', title, '기상청 자동 봇', todayStr, summary, content, null);
+
+      console.log(`🌤️ [지역 기사 자동 생성 완료] ${title}`);
+      return res.status(201).json({ message: '지역 맞춤 기사가 등록되었습니다.', title });
+    }
+
+    res.json({ message: '이미 최신 기사가 등록되어 있습니다.' });
+  } catch (err) {
+    console.error('지역 날씨 기사 자동 생성 오류:', err);
+    res.status(500).json({ message: '서버 오류' });
+  }
+});
 
 // 로그인
 app.post('/api/auth/login', async (req, res) => {
@@ -247,13 +325,10 @@ app.delete('/api/articles/:id', authenticateToken, (req, res) => {
   }
 });
 
-// 🚀 서버 실행 시 즉시 1회 날씨 기사 작성 후 3시간마다 주기적 자동 등록
+// 🚀 서버 실행 시 기본 날씨 기사 작성 후 3시간마다 주기적 등록
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
 
-  // 서버 부팅 시 즉시 실행
   generateWeatherArticle();
-
-  // 3시간마다 자동 등록 (3 * 60 * 60 * 1000 ms)
   setInterval(generateWeatherArticle, 3 * 60 * 60 * 1000);
 });
