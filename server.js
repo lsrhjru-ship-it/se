@@ -8,8 +8,7 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 
-// 💡 Wispbyte 환경변수 포트 우선 적용, 없을 경우 14201 기본 사용
-const PORT = process.env.PORT || 14201;
+const PORT = process.env.PORT || 10000; // Render 기본 포트 대응
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
 // SQLite 데이터베이스 연결
@@ -38,10 +37,10 @@ db.exec(`
   );
 `);
 
-// 컬럼 마이그레이션 (이미 있으면 무시)
-try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) {}
-try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) {}
-try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) {}
+// 컬럼 마이그레이션 (이미 존재 시 무시)
+try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) { }
+try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) { }
+try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) { }
 
 // 관리자 계정 초기화
 const initAdmin = async () => {
@@ -58,16 +57,16 @@ const initAdmin = async () => {
 };
 initAdmin();
 
-// 💡 CORS 헤더 최우선 강제 설정 (Wispbyte/프록시 환경 대응)
+// 💡 CORS 설정 (모든 Custom Header 및 Preflight 요청 완벽 허용)
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Bypass-Tunnel-Reminder, ngrok-skip-browser-warning');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
 
-  // OPTIONS 예비 요청(preflight) 즉시 200 응답 처리
+  // OPTIONS 예비 요청(preflight) 즉시 200 OK 응답 처리
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.sendStatus(200);
   }
   next();
 });
@@ -176,7 +175,7 @@ app.put('/api/articles/:id', authenticateToken, (req, res) => {
   try {
     const result = db.prepare(
       'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = ? WHERE id = ?'
-    ).run(safeCategory, safeTitle, safeAuthor, safeDate, safeSummary, safeContent, safeImageUrl, req.params.id);
+    ).run(safeCategory, safeTitle, safeContent, safeSummary, safeImageUrl, req.params.id);
 
     if (result.changes === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json({ message: '게시글이 수정되었습니다.' });
@@ -197,7 +196,6 @@ app.delete('/api/articles/:id', authenticateToken, (req, res) => {
   }
 });
 
-// 💡 0.0.0.0 주소 및 지정 포트(14201) 바인딩
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 서버가 실행되었습니다: http://0.0.0.0:${PORT}`);
+  console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
 });
