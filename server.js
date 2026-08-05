@@ -54,6 +54,8 @@ async function initDb() {
   try { await db.execute(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) { }
   try { await db.execute(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) { }
   try { await db.execute(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) { }
+  // ✅ 영상(video) 컬럼 마이그레이션
+  try { await db.execute(`ALTER TABLE articles ADD COLUMN videoUrl TEXT;`); } catch (e) { }
 }
 
 // 관리자 계정 초기화
@@ -91,8 +93,9 @@ app.use((req, res, next) => {
 });
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// ✅ 영상 Base64 업로드를 감안해 바디 사이즈 제한을 확장 (50mb → 120mb)
+app.use(express.json({ limit: '120mb' }));
+app.use(express.urlencoded({ limit: '120mb', extended: true }));
 app.use(express.static(path.join(__dirname)));
 
 /* ==================================================
@@ -387,7 +390,7 @@ app.get('/api/articles/:id', async (req, res) => {
 
 // 게시글 작성
 app.post('/api/articles', authenticateToken, async (req, res) => {
-  const { category, title, content, summary, imageUrl } = req.body;
+  const { category, title, content, summary, imageUrl, videoUrl } = req.body;
 
   const safeCategory = category || '기타';
   const safeTitle = title || '제목 없음';
@@ -396,32 +399,35 @@ app.post('/api/articles', authenticateToken, async (req, res) => {
   const safeDate = new Date().toISOString().split('T')[0];
   const safeSummary = summary || safeContent.substring(0, 100) || '';
   const safeImageUrl = imageUrl || null;
+  const safeVideoUrl = videoUrl || null; // ✅ 영상 URL/Base64
 
   try {
     const result = await db.execute({
-      sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-      args: [safeCategory, safeTitle, safeAuthor, safeDate, safeSummary, safeContent, safeImageUrl],
+      sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, videoUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)',
+      args: [safeCategory, safeTitle, safeAuthor, safeDate, safeSummary, safeContent, safeImageUrl, safeVideoUrl],
     });
 
     res.status(201).json({ id: Number(result.lastInsertRowid), message: '게시글이 성공적으로 저장되었습니다.' });
   } catch (error) {
+    console.error('게시글 저장 오류:', error);
     res.status(500).json({ message: '게시글 저장 실패' });
   }
 });
 
 // 게시글 수정
 app.put('/api/articles/:id', authenticateToken, async (req, res) => {
-  const { category, title, content, summary, imageUrl } = req.body;
+  const { category, title, content, summary, imageUrl, videoUrl } = req.body;
 
   try {
     const result = await db.execute({
-      sql: 'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = ? WHERE id = ?',
-      args: [category, title, content, summary, imageUrl, req.params.id],
+      sql: 'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = ?, videoUrl = ? WHERE id = ?',
+      args: [category, title, content, summary, imageUrl, videoUrl || null, req.params.id],
     });
 
     if (result.rowsAffected === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json({ message: '게시글이 수정되었습니다.' });
   } catch (error) {
+    console.error('게시글 수정 오류:', error);
     res.status(500).json({ message: '게시글 수정 실패' });
   }
 });
