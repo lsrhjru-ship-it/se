@@ -111,15 +111,16 @@ const getWeatherDesc = (code) => {
 };
 
 const getWeatherImage = (code) => {
-  // LoremFlickr: 태그 기반으로 관련 풍경 사진을 무료로 제공, lock 값으로 같은 코드는 항상 같은 사진 고정
-  if (code === 0) return 'https://loremflickr.com/800/450/sunny,landscape,sky?lock=101';
-  if (code >= 1 && code <= 3) return 'https://loremflickr.com/800/450/cloudy,landscape,sky?lock=102';
-  if (code >= 45 && code <= 48) return 'https://loremflickr.com/800/450/fog,landscape,mist?lock=103';
-  if (code >= 51 && code <= 67) return 'https://loremflickr.com/800/450/rain,landscape,rainy?lock=104';
-  if (code >= 71 && code <= 77) return 'https://loremflickr.com/800/450/snow,landscape,winter?lock=105';
-  if (code >= 80 && code <= 82) return 'https://loremflickr.com/800/450/rainstorm,landscape,clouds?lock=106';
-  if (code >= 95) return 'https://loremflickr.com/800/450/thunderstorm,lightning,sky?lock=107';
-  return 'https://loremflickr.com/800/450/overcast,landscape,gray-sky?lock=108';
+  // Picsum: 정적 CDN이 미리 저장된 사진을 그대로 서빙 -> LoremFlickr보다 훨씬 빠름
+  // seed 값으로 날씨 코드마다 항상 같은 사진이 고정되어 나옴
+  if (code === 0) return 'https://picsum.photos/seed/weather-sunny/800/450';
+  if (code >= 1 && code <= 3) return 'https://picsum.photos/seed/weather-cloudy/800/450';
+  if (code >= 45 && code <= 48) return 'https://picsum.photos/seed/weather-fog/800/450';
+  if (code >= 51 && code <= 67) return 'https://picsum.photos/seed/weather-rain/800/450';
+  if (code >= 71 && code <= 77) return 'https://picsum.photos/seed/weather-snow/800/450';
+  if (code >= 80 && code <= 82) return 'https://picsum.photos/seed/weather-shower/800/450';
+  if (code >= 95) return 'https://picsum.photos/seed/weather-storm/800/450';
+  return 'https://picsum.photos/seed/weather-overcast/800/450';
 };
 
 async function generateWeatherArticle() {
