@@ -123,8 +123,25 @@ const getWeatherImage = (code) => {
   return 'https://picsum.photos/seed/weather-overcast/800/450';
 };
 
+// ✅ 오늘 수도권 날씨 기사가 이미 등록됐는지 체크 (제목이 아니라 카테고리+날짜 기준)
+async function hasTodayWeatherArticle(category, todayStr) {
+  const existing = await db.execute({
+    sql: 'SELECT id FROM articles WHERE category = ? AND date = ?',
+    args: [category, todayStr],
+  });
+  return existing.rows.length > 0;
+}
+
 async function generateWeatherArticle() {
   try {
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // ✅ 오늘 날짜의 수도권 날씨 기사가 이미 있으면 스킵 (서버 재시작/슬립-웨이크로 인한 중복 생성 방지)
+    if (await hasTodayWeatherArticle('날씨', todayStr)) {
+      console.log('오늘자 수도권 날씨 기사가 이미 존재합니다. 자동 생성을 건너뜁니다.');
+      return;
+    }
+
     const res = await fetch(
       'https://api.open-meteo.com/v1/forecast?latitude=37.5665&longitude=126.9780&current_weather=true&hourly=relativehumidity_2m'
     );
@@ -138,7 +155,6 @@ async function generateWeatherArticle() {
 
     const weatherDesc = getWeatherDesc(weatherCode);
     const weatherImage = getWeatherImage(weatherCode);
-    const todayStr = new Date().toISOString().split('T')[0];
     const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
     const title = `[기상청 속보] 오늘 수도권 날씨 기온 ${temp}°C, ${weatherDesc} 예보`;
@@ -157,6 +173,7 @@ async function generateWeatherArticle() {
 - 기상청 실시간 자동 뉴스 제공
     `.trim();
 
+    // 이중 안전장치: 혹시 모를 동시 실행 대비, 제목 기준으로도 한 번 더 확인
     const existing = await db.execute({
       sql: 'SELECT * FROM articles WHERE title = ?',
       args: [title],
@@ -227,6 +244,17 @@ app.post('/api/articles/auto-weather', async (req, res) => {
     const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
     const title = `[기상청 속보] ${regionName} 실시간 날씨 기온 ${temp}°C (${weatherDesc})`;
+
+    // ✅ 같은 지역 + 같은 날짜의 기사가 이미 있으면 새로 만들지 않음 (제목의 기온 값 때문에 중복 생성되는 문제 방지)
+    const existingRegionToday = await db.execute({
+      sql: 'SELECT * FROM articles WHERE category = ? AND date = ? AND title LIKE ?',
+      args: ['날씨', todayStr, `%${regionName}%`],
+    });
+
+    if (existingRegionToday.rows.length > 0) {
+      return res.json({ message: '오늘 해당 지역의 기사가 이미 등록되어 있습니다.' });
+    }
+
     const summary = `현재 ${regionName} 지역 기온은 ${temp}°C이며 ${weatherDesc} 날씨를 보이고 있습니다.`;
     const content = `
 [기상청 지역별 실시간 예보 - ${regionName} (${todayStr} ${timeStr} 기준)]
@@ -243,22 +271,13 @@ ${regionName} 주민 여러분께서는 외출 시 기온 변화 및 기상 상�
 - 기상청 지역 맞춤 자동 기사 시스템
     `.trim();
 
-    const existing = await db.execute({
-      sql: 'SELECT * FROM articles WHERE title = ?',
-      args: [title],
+    await db.execute({
+      sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+      args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, weatherImage],
     });
 
-    if (existing.rows.length === 0) {
-      await db.execute({
-        sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, weatherImage],
-      });
-
-      console.log(`🌤️ [지역 기사 자동 생성 완료] ${title}`);
-      return res.status(201).json({ message: '지역 맞춤 기사가 등록되었습니다.', title });
-    }
-
-    res.json({ message: '이미 최신 기사가 등록되어 있습니다.' });
+    console.log(`🌤️ [지역 기사 자동 생성 완료] ${title}`);
+    return res.status(201).json({ message: '지역 맞춤 기사가 등록되었습니다.', title });
   } catch (err) {
     console.error('지역 날씨 기사 자동 생성 오류:', err);
     res.status(500).json({ message: '서버 오류' });
@@ -376,7 +395,7 @@ app.delete('/api/articles/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 🚀 서버 실행 시 DB 초기화 + 기본 날씨 기사 작성 후 3시간마다 주기적 등록
+// 🚀 서버 실행 시 DB 초기화 + 기본 날씨 기사 작성 후 24시간마다 주기적 등록
 async function start() {
   await initDb();
   await initAdmin();
