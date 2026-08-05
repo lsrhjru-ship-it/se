@@ -11,7 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-// ========================================== 
+// ==========================================
 // Turso(SQLite 호환 클라우드 DB) 연결
 // TURSO_DATABASE_URL, TURSO_AUTH_TOKEN 환경변수 필요
 // ==========================================
@@ -98,6 +98,29 @@ app.use(express.static(path.join(__dirname)));
 /* ==================================================
    🌤️ 기본 날씨 기사 자동 생성 로직 (서버 타이머용)
 ================================================== */
+// 날씨 코드 → 설명 / 이미지 URL 매핑
+const getWeatherDesc = (code) => {
+  if (code === 0) return '맑음';
+  if (code >= 1 && code <= 3) return '구름 조금 및 다소 흐림';
+  if (code >= 45 && code <= 48) return '짙은 안개';
+  if (code >= 51 && code <= 67) return '비/이슬비';
+  if (code >= 71 && code <= 77) return '눈';
+  if (code >= 80 && code <= 82) return '소나기';
+  if (code >= 95) return '천둥번개를 동반한 뇌우';
+  return '대체로 흐림';
+};
+
+const getWeatherImage = (code) => {
+  if (code === 0) return 'https://img.icons8.com/fluency/240/sun.png';
+  if (code >= 1 && code <= 3) return 'https://img.icons8.com/fluency/240/partly-cloudy-day.png';
+  if (code >= 45 && code <= 48) return 'https://img.icons8.com/fluency/240/fog-day.png';
+  if (code >= 51 && code <= 67) return 'https://img.icons8.com/fluency/240/rain.png';
+  if (code >= 71 && code <= 77) return 'https://img.icons8.com/fluency/240/snow.png';
+  if (code >= 80 && code <= 82) return 'https://img.icons8.com/fluency/240/light-rain.png';
+  if (code >= 95) return 'https://img.icons8.com/fluency/240/storm.png';
+  return 'https://img.icons8.com/fluency/240/cloud.png';
+};
+
 async function generateWeatherArticle() {
   try {
     const res = await fetch(
@@ -111,18 +134,8 @@ async function generateWeatherArticle() {
     const weatherCode = data.current_weather.weathercode;
     const humidity = data.hourly?.relativehumidity_2m?.[0] || 60;
 
-    const getWeatherDesc = (code) => {
-      if (code === 0) return '맑음';
-      if (code >= 1 && code <= 3) return '구름 조금 및 다소 흐림';
-      if (code >= 45 && code <= 48) return '짙은 안개';
-      if (code >= 51 && code <= 67) return '비/이슬비';
-      if (code >= 71 && code <= 77) return '눈';
-      if (code >= 80 && code <= 82) return '소나기';
-      if (code >= 95) return '천둥번개를 동반한 뇌우';
-      return '대체로 흐림';
-    };
-
     const weatherDesc = getWeatherDesc(weatherCode);
+    const weatherImage = getWeatherImage(weatherCode);
     const todayStr = new Date().toISOString().split('T')[0];
     const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
@@ -150,7 +163,7 @@ async function generateWeatherArticle() {
     if (existing.rows.length === 0) {
       await db.execute({
         sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, null],
+        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, weatherImage],
       });
 
       console.log(`🌤️ [자동 뉴스 발송] ${title}`);
@@ -206,18 +219,8 @@ app.post('/api/articles/auto-weather', async (req, res) => {
       console.log('도시명 변환 실패, 기본 이름 사용');
     }
 
-    const getWeatherDesc = (code) => {
-      if (code === 0) return '맑음';
-      if (code >= 1 && code <= 3) return '구름 조금 및 흐림';
-      if (code >= 45 && code <= 48) return '짙은 안개';
-      if (code >= 51 && code <= 67) return '비/이슬비';
-      if (code >= 71 && code <= 77) return '눈';
-      if (code >= 80 && code <= 82) return '소나기';
-      if (code >= 95) return '천둥번개 뇌우';
-      return '대체로 흐림';
-    };
-
     const weatherDesc = getWeatherDesc(weatherCode);
+    const weatherImage = getWeatherImage(weatherCode);
     const todayStr = new Date().toISOString().split('T')[0];
     const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
@@ -246,7 +249,7 @@ ${regionName} 주민 여러분께서는 외출 시 기온 변화 및 기상 상�
     if (existing.rows.length === 0) {
       await db.execute({
         sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, null],
+        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, weatherImage],
       });
 
       console.log(`🌤️ [지역 기사 자동 생성 완료] ${title}`);
@@ -380,7 +383,7 @@ async function start() {
     console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
 
     generateWeatherArticle();
-    setInterval(generateWeatherArticle, 3 * 60 * 60 * 1000);
+    setInterval(generateWeatherArticle, 24 * 60 * 60 * 1000);
   });
 }
 
