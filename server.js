@@ -111,14 +111,15 @@ const getWeatherDesc = (code) => {
 };
 
 const getWeatherImage = (code) => {
-  if (code === 0) return 'https://img.icons8.com/fluency/240/sun.png';
-  if (code >= 1 && code <= 3) return 'https://img.icons8.com/fluency/240/partly-cloudy-day.png';
-  if (code >= 45 && code <= 48) return 'https://img.icons8.com/fluency/240/fog-day.png';
-  if (code >= 51 && code <= 67) return 'https://img.icons8.com/fluency/240/rain.png';
-  if (code >= 71 && code <= 77) return 'https://img.icons8.com/fluency/240/snow.png';
-  if (code >= 80 && code <= 82) return 'https://img.icons8.com/fluency/240/light-rain.png';
-  if (code >= 95) return 'https://img.icons8.com/fluency/240/storm.png';
-  return 'https://img.icons8.com/fluency/240/cloud.png';
+  // LoremFlickr: 태그 기반으로 관련 풍경 사진을 무료로 제공, lock 값으로 같은 코드는 항상 같은 사진 고정
+  if (code === 0) return 'https://loremflickr.com/800/450/sunny,landscape,sky?lock=101';
+  if (code >= 1 && code <= 3) return 'https://loremflickr.com/800/450/cloudy,landscape,sky?lock=102';
+  if (code >= 45 && code <= 48) return 'https://loremflickr.com/800/450/fog,landscape,mist?lock=103';
+  if (code >= 51 && code <= 67) return 'https://loremflickr.com/800/450/rain,landscape,rainy?lock=104';
+  if (code >= 71 && code <= 77) return 'https://loremflickr.com/800/450/snow,landscape,winter?lock=105';
+  if (code >= 80 && code <= 82) return 'https://loremflickr.com/800/450/rainstorm,landscape,clouds?lock=106';
+  if (code >= 95) return 'https://loremflickr.com/800/450/thunderstorm,lightning,sky?lock=107';
+  return 'https://loremflickr.com/800/450/overcast,landscape,gray-sky?lock=108';
 };
 
 async function generateWeatherArticle() {
