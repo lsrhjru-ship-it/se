@@ -11,7 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-// ==========================================
+// ========================================== 
 // Turso(SQLite 호환 클라우드 DB) 연결
 // TURSO_DATABASE_URL, TURSO_AUTH_TOKEN 환경변수 필요
 // ==========================================
