@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const Database = require('better-sqlite3');
+const { createClient } = require('@libsql/client');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
@@ -11,36 +11,50 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-// SQLite 데이터베이스 연결
-const db = new Database(path.join(__dirname, 'blog.db'));
+// ==========================================
+// Turso(SQLite 호환 클라우드 DB) 연결
+// TURSO_DATABASE_URL, TURSO_AUTH_TOKEN 환경변수 필요
+// ==========================================
+if (!process.env.TURSO_DATABASE_URL) {
+  console.error('❌ TURSO_DATABASE_URL 환경변수가 설정되지 않았습니다.');
+}
 
-// 1. 테이블 생성
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    name TEXT NOT NULL,
-    role TEXT DEFAULT 'user'
-  );
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL,
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
 
-  CREATE TABLE IF NOT EXISTS articles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT NOT NULL,
-    title TEXT NOT NULL,
-    author TEXT NOT NULL,
-    date TEXT NOT NULL,
-    summary TEXT,
-    content TEXT NOT NULL,
-    imageUrl TEXT,
-    views INTEGER DEFAULT 0
-  );
-`);
+// 1. 테이블 생성 + 컬럼 마이그레이션
+async function initDb() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT DEFAULT 'user'
+    );
+  `);
 
-// 컬럼 마이그레이션
-try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) { }
-try { db.exec(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) { }
-try { db.exec(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) { }
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS articles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      author TEXT NOT NULL,
+      date TEXT NOT NULL,
+      summary TEXT,
+      content TEXT NOT NULL,
+      imageUrl TEXT,
+      views INTEGER DEFAULT 0
+    );
+  `);
+
+  // 컬럼 마이그레이션 (이미 있으면 에러 무시)
+  try { await db.execute(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user';`); } catch (e) { }
+  try { await db.execute(`ALTER TABLE articles ADD COLUMN imageUrl TEXT;`); } catch (e) { }
+  try { await db.execute(`ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0;`); } catch (e) { }
+}
 
 // 관리자 계정 초기화
 const initAdmin = async () => {
@@ -48,14 +62,20 @@ const initAdmin = async () => {
   const adminPass = process.env.ADMIN_PASSWORD || 'lsr37733*';
   const adminName = process.env.ADMIN_NAME || '기상청 자동 봇';
 
-  const row = db.prepare('SELECT * FROM users WHERE username = ?').get(adminUser);
-  if (!row) {
+  const result = await db.execute({
+    sql: 'SELECT * FROM users WHERE username = ?',
+    args: [adminUser],
+  });
+
+  if (result.rows.length === 0) {
     const hashedPassword = await bcrypt.hash(adminPass, 10);
-    db.prepare('INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)').run(adminUser, hashedPassword, adminName, 'admin');
+    await db.execute({
+      sql: 'INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)',
+      args: [adminUser, hashedPassword, adminName, 'admin'],
+    });
     console.log('✅ 관리자 계정이 생성되었습니다.');
   }
 };
-initAdmin();
 
 // 💡 CORS 설정
 app.use((req, res, next) => {
@@ -122,11 +142,16 @@ async function generateWeatherArticle() {
 - 기상청 실시간 자동 뉴스 제공
     `.trim();
 
-    const existing = db.prepare('SELECT * FROM articles WHERE title = ?').get(title);
-    if (!existing) {
-      db.prepare(
-        'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
-      ).run('날씨', title, '기상청 자동 봇', todayStr, summary, content, null);
+    const existing = await db.execute({
+      sql: 'SELECT * FROM articles WHERE title = ?',
+      args: [title],
+    });
+
+    if (existing.rows.length === 0) {
+      await db.execute({
+        sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, null],
+      });
 
       console.log(`🌤️ [자동 뉴스 발송] ${title}`);
     }
@@ -213,11 +238,16 @@ ${regionName} 주민 여러분께서는 외출 시 기온 변화 및 기상 상�
 - 기상청 지역 맞춤 자동 기사 시스템
     `.trim();
 
-    const existing = db.prepare('SELECT * FROM articles WHERE title = ?').get(title);
-    if (!existing) {
-      db.prepare(
-        'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
-      ).run('날씨', title, '기상청 자동 봇', todayStr, summary, content, null);
+    const existing = await db.execute({
+      sql: 'SELECT * FROM articles WHERE title = ?',
+      args: [title],
+    });
+
+    if (existing.rows.length === 0) {
+      await db.execute({
+        sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+        args: ['날씨', title, '기상청 자동 봇', todayStr, summary, content, null],
+      });
 
       console.log(`🌤️ [지역 기사 자동 생성 완료] ${title}`);
       return res.status(201).json({ message: '지역 맞춤 기사가 등록되었습니다.', title });
@@ -234,7 +264,11 @@ ${regionName} 주민 여러분께서는 외출 시 기온 변화 및 기상 상�
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   try {
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    const result = await db.execute({
+      sql: 'SELECT * FROM users WHERE username = ?',
+      args: [username],
+    });
+    const user = result.rows[0];
     if (!user) return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
 
     const match = await bcrypt.compare(password, user.password);
@@ -254,20 +288,27 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // 게시글 목록 조회
-app.get('/api/articles', (req, res) => {
+app.get('/api/articles', async (req, res) => {
   try {
-    const articles = db.prepare('SELECT * FROM articles ORDER BY id DESC').all();
-    res.json(articles);
+    const result = await db.execute('SELECT * FROM articles ORDER BY id DESC');
+    res.json(result.rows);
   } catch (error) {
     res.status(500).json({ message: '게시글 목록을 불러오지 못했습니다.' });
   }
 });
 
 // 게시글 상세 조회
-app.get('/api/articles/:id', (req, res) => {
+app.get('/api/articles/:id', async (req, res) => {
   try {
-    db.prepare('UPDATE articles SET views = views + 1 WHERE id = ?').run(req.params.id);
-    const article = db.prepare('SELECT * FROM articles WHERE id = ?').get(req.params.id);
+    await db.execute({
+      sql: 'UPDATE articles SET views = views + 1 WHERE id = ?',
+      args: [req.params.id],
+    });
+    const result = await db.execute({
+      sql: 'SELECT * FROM articles WHERE id = ?',
+      args: [req.params.id],
+    });
+    const article = result.rows[0];
     if (!article) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json(article);
   } catch (error) {
@@ -276,7 +317,7 @@ app.get('/api/articles/:id', (req, res) => {
 });
 
 // 게시글 작성
-app.post('/api/articles', authenticateToken, (req, res) => {
+app.post('/api/articles', authenticateToken, async (req, res) => {
   const { category, title, content, summary, imageUrl } = req.body;
 
   const safeCategory = category || '기타';
@@ -288,26 +329,28 @@ app.post('/api/articles', authenticateToken, (req, res) => {
   const safeImageUrl = imageUrl || null;
 
   try {
-    const result = db.prepare(
-      'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
-    ).run(safeCategory, safeTitle, safeAuthor, safeDate, safeSummary, safeContent, safeImageUrl);
+    const result = await db.execute({
+      sql: 'INSERT INTO articles (category, title, author, date, summary, content, imageUrl, views) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+      args: [safeCategory, safeTitle, safeAuthor, safeDate, safeSummary, safeContent, safeImageUrl],
+    });
 
-    res.status(201).json({ id: result.lastInsertRowid, message: '게시글이 성공적으로 저장되었습니다.' });
+    res.status(201).json({ id: Number(result.lastInsertRowid), message: '게시글이 성공적으로 저장되었습니다.' });
   } catch (error) {
     res.status(500).json({ message: '게시글 저장 실패' });
   }
 });
 
 // 게시글 수정
-app.put('/api/articles/:id', authenticateToken, (req, res) => {
+app.put('/api/articles/:id', authenticateToken, async (req, res) => {
   const { category, title, content, summary, imageUrl } = req.body;
 
   try {
-    const result = db.prepare(
-      'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = ? WHERE id = ?'
-    ).run(category, title, content, summary, imageUrl, req.params.id);
+    const result = await db.execute({
+      sql: 'UPDATE articles SET category = ?, title = ?, content = ?, summary = ?, imageUrl = ? WHERE id = ?',
+      args: [category, title, content, summary, imageUrl, req.params.id],
+    });
 
-    if (result.changes === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
+    if (result.rowsAffected === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json({ message: '게시글이 수정되었습니다.' });
   } catch (error) {
     res.status(500).json({ message: '게시글 수정 실패' });
@@ -315,20 +358,30 @@ app.put('/api/articles/:id', authenticateToken, (req, res) => {
 });
 
 // 게시글 삭제
-app.delete('/api/articles/:id', authenticateToken, (req, res) => {
+app.delete('/api/articles/:id', authenticateToken, async (req, res) => {
   try {
-    const result = db.prepare('DELETE FROM articles WHERE id = ?').run(req.params.id);
-    if (result.changes === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
+    const result = await db.execute({
+      sql: 'DELETE FROM articles WHERE id = ?',
+      args: [req.params.id],
+    });
+    if (result.rowsAffected === 0) return res.status(404).json({ message: '게시글을 찾을 수 없습니다.' });
     res.json({ message: '게시글이 삭제되었습니다.' });
   } catch (error) {
     res.status(500).json({ message: '게시글 삭제 실패' });
   }
 });
 
-// 🚀 서버 실행 시 기본 날씨 기사 작성 후 3시간마다 주기적 등록
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
+// 🚀 서버 실행 시 DB 초기화 + 기본 날씨 기사 작성 후 3시간마다 주기적 등록
+async function start() {
+  await initDb();
+  await initAdmin();
 
-  generateWeatherArticle();
-  setInterval(generateWeatherArticle, 3 * 60 * 60 * 1000);
-});
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
+
+    generateWeatherArticle();
+    setInterval(generateWeatherArticle, 3 * 60 * 60 * 1000);
+  });
+}
+
+start();
