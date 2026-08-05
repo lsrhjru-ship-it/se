@@ -206,6 +206,14 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// 관리자 권한 확인 미들웨어 (authenticateToken 이후에 사용)
+const requireAdmin = (req, res, next) => {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({ message: '관리자만 접근할 수 있습니다.' });
+  }
+  next();
+};
+
 // --- API 라우트 ---
 
 // 📍 사용자 지역 맞춤 날씨 기사 자동 등록 API 라우트
@@ -308,6 +316,43 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ token, user: { username: user.username, name: user.name, role: userRole } });
   } catch (error) {
     res.status(500).json({ message: '서버 에러가 발생했습니다.' });
+  }
+});
+
+// 관리자 전용 - 새 계정 생성
+app.post('/api/auth/register', authenticateToken, requireAdmin, async (req, res) => {
+  const { username, password, name, role } = req.body;
+
+  if (!username || !password || !name) {
+    return res.status(400).json({ message: 'username, password, name은 필수입니다.' });
+  }
+
+  // role은 'admin' 또는 'user'만 허용 (없으면 'user' 기본값)
+  const safeRole = role === 'admin' ? 'admin' : 'user';
+
+  try {
+    const existing = await db.execute({
+      sql: 'SELECT id FROM users WHERE username = ?',
+      args: [username],
+    });
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ message: '이미 존재하는 아이디입니다.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const result = await db.execute({
+      sql: 'INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)',
+      args: [username, hashedPassword, name, safeRole],
+    });
+
+    res.status(201).json({
+      id: Number(result.lastInsertRowid),
+      message: '계정이 생성되었습니다.',
+      user: { username, name, role: safeRole },
+    });
+  } catch (error) {
+    console.error('계정 생성 오류:', error);
+    res.status(500).json({ message: '계정 생성 실패' });
   }
 });
 
